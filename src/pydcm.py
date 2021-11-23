@@ -1,7 +1,20 @@
-# -*- coding:utf-8 -*-
-# Author: zhang yongquan
-# Email: zhyongquan@gmail.com
-# GitHub: https://github.com/zhyongquan
+"""
+-*- coding:utf-8 -*-
+Author: zhang yongquan
+Email: zhyongquan@gmail.com
+GitHub: https://github.com/zhyongquan
+
+Modifications contributed by motthomasn <motthomasn@gmail.com>:
+211123      Corrected self.name in axis.show()
+            Corrected spelling of axises to axes
+            added GROUPED_CURVE & GROUPED_MAP types to dcminfo.keywords and dcminfo.read
+            Corrected type VAL_BLK to VALUE in calibration.show
+            Changed calibration.show 3d plot cmap from rainbow to jet and added black edge colour. Personal preference
+            Added grid lines calibration.show 2d plots
+            Replaced line 263 self.calibrations[cal.name] = cal with self.addcalibration(cal)
+            Added handling for shared axes at end of dcminfo.read
+            Note: Axes are currently stored as cal objects, not axis objects
+"""
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -61,7 +74,7 @@ class axis(calobject):
     def show(self):
         x = range(0, len(self.value) - 1, 1)
         plt.plot(x, self.value, marker='o')
-        plt.title(name)
+        plt.title(self.name)
         plt.xlabel(self.getlabel("x", "", ""))
         plt.ylabel(self.getlabel("y", self.name, self.unit))
         # for i in range(0, len(self.value) - 1):
@@ -79,16 +92,17 @@ class calibration(calobject):
         self.y = axis("")
 
     def show(self):
-        if self.type == "CURVE" or self.type == "MAP" or self.type == "VAL_BLK":
-            if self.type == "CURVE":
+        if self.type == "CURVE" or self.type == "GROUPED_CURVE" or self.type == "MAP" or self.type == "GROUPED_MAP" or self.type == "VALUE":
+            if self.type == "CURVE" or self.type == "GROUPED_CURVE":
                 plt.plot(self.x.value, self.value, marker='o')
                 plt.title(self.name)
                 plt.xlabel(self.getlabel("x", self.x.name, self.x.unit))
                 plt.ylabel(self.getlabel("y", self.name, self.unit))
+                plt.grid(b=True, which='major', axis='both')
                 # for i in range(0, len(self.value)):
                 #     plt.text(self.x.value[i], self.value[i], "{0},{1}".format(self.x.value[i], self.value[i]))
                 plt.show()
-            elif self.type == "MAP":
+            elif self.type == "MAP" or self.type == "GROUPED_MAP":
                 X, Y = np.meshgrid(self.y.value, self.x.value)  # exchange for plot
                 nx = len(self.x.value)
                 ny = len(self.y.value)
@@ -98,14 +112,14 @@ class calibration(calobject):
                         Z[i, j] = self.value[j][i]
                 fig = plt.figure()
                 ax = Axes3D(fig)
-                p = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap='rainbow')
+                p = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap='jet', edgecolor='k')
                 fig.colorbar(p)
                 ax.set_title(self.name)
                 ax.set_ylabel(self.getlabel("x", self.x.name, self.x.unit))  # exchange for plot
                 ax.set_xlabel(self.getlabel("y", self.y.name, self.y.unit))  # exchange for plot
                 ax.set_zlabel(self.getlabel("z", self.name, self.unit))
                 plt.show()
-            elif self.type == "VAL_BLK":
+            elif self.type == "VALUE":
                 if not isDigit(self.value[0]):
                     return
                 x = range(0, len(self.value) - 1, 1)
@@ -132,17 +146,26 @@ class dcminfo:
     string_delimiter = '"'
     functions = {}
     calibrations = {}
-    axises = {}
-    calobjects = {"functions": functions, "calibrations": calibrations, "axises": axises}
+    axes = {}
+    calobjects = {"functions": functions, 
+                  "calibrations": calibrations, 
+                  "axes": axes}
     line_count = 0
     regex = r"(\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\")|(?:[^\\ \t]+)"
-    keywords = {"FESTWERT": "VALUE", "KENNLINIE": "CURVE", "KENNFELD": "MAP"}
+    keywords = {"FESTWERT": "VALUE", 
+                "KENNLINIE": "CURVE",
+                "GRUPPENKENNLINIE": "GROUPED_CURVE",
+                "KENNFELD": "MAP",
+                "GRUPPENKENNFELD": "GROUPED_MAP",
+                "STUETZSTELLENVERTEILUNG": "SHARED_AXIS"}
 
     def __init__(self):
         self.functions = {}
         self.calibrations = {}
-        self.axises = {}
-        self.calobjects = {"function": self.functions, "calibration": self.calibrations, "axis": self.axises}
+        self.axes = {}
+        self.calobjects = {"function": self.functions, 
+                           "calibration": self.calibrations, 
+                           "axis": self.axes}
         return
 
     def addfunction(self, fun):
@@ -154,8 +177,8 @@ class dcminfo:
         self.calibrations[cal.name] = cal
 
     def addaxis(self, ax):
-        # if not ax.name in self.axises.keys():
-        self.axises[ax.name] = ax
+        # if not ax.name in self.axes.keys():
+        self.axes[ax.name] = ax
         # for cal in self.calibrations:
         #     if cal.x.name == ax.name:
         #         cal.x = ax
@@ -178,7 +201,7 @@ class dcminfo:
     def read(self, dcmfile):
         self.functions.clear()
         self.calibrations.clear()
-        self.axises.clear()
+        self.axes.clear()
         line_count = 0
         with open(dcmfile, 'r') as file:
             # first line: Description Header
@@ -229,10 +252,10 @@ class dcminfo:
                     elif txt[1] == "WERT":
                         if cal.type == "VALUE":
                             cal.value.append(float(txt[2]))
-                        elif cal.type == "CURVE":
+                        elif ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
                             for i in range(2, len(txt) + 1):
                                 cal.value.append(float(txt[i]))
-                        elif cal.type == "MAP":
+                        elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
                             for i in range(2, len(txt) + 1):
                                 y_value.append(float(txt[i]))
                     elif txt[1] == "END":
@@ -240,10 +263,13 @@ class dcminfo:
                             cal.value.append(y_value)
                             y_value = []
                         cal.line_end = line_count
-                        self.calibrations[cal.name] = cal
+                        if cal.type == "SHARED_AXIS":
+                            self.addaxis(cal)
+                        else:
+                            self.addcalibration(cal)
 
-            print("find functions:{0}, calibrations:{1}, axises:{2}".format(len(self.functions), len(self.calibrations),
-                                                                            len(self.axises)))
+            print("find functions:{0}, calibrations:{1}, axes:{2}".format(len(self.functions), len(self.calibrations),
+                                                                            len(self.axes)))
             self.line_count = line_count
 
 
