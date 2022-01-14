@@ -14,12 +14,20 @@ Modifications contributed by motthomasn <motthomasn@gmail.com>:
             Replaced line 263 self.calibrations[cal.name] = cal with self.addcalibration(cal)
             Added handling for shared axes at end of dcminfo.read
             Note: Axes are currently stored as cal objects, not axis objects
+211125      Changed print string to fstring (line 271)
+            Changed comment indicator from "*" to "* " to allow reading of axis names. Actual comments tend to have a space between * & comment
+            Added functionality to deal with axis objects
+            Removed -1 from x = range(0, len(self.value), 1) in axis.show
+            Added grid lines axis.show
+            Added write function
 """
 
 import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D
 import re
+import os
+from datetime import datetime
 
 
 class function:
@@ -72,11 +80,12 @@ class calobject(function):
 class axis(calobject):
 
     def show(self):
-        x = range(0, len(self.value) - 1, 1)
+        x = range(0, len(self.value), 1)
         plt.plot(x, self.value, marker='o')
         plt.title(self.name)
         plt.xlabel(self.getlabel("x", "", ""))
         plt.ylabel(self.getlabel("y", self.name, self.unit))
+        plt.grid(b=True, which='major', axis='both')
         # for i in range(0, len(self.value) - 1):
         #     plt.text(i, self.value[i], "{0},{1}".format(i, self.value[i]))
         plt.show()
@@ -142,7 +151,7 @@ class calibration(calobject):
 
 class dcminfo:
     file_content = "KONSERVIERUNG_FORMAT 2.0"
-    comment_indicator = '*'
+    comment_indicator = '* '
     string_delimiter = '"'
     functions = {}
     calibrations = {}
@@ -207,7 +216,8 @@ class dcminfo:
             # first line: Description Header
             line = file.readline()
             line_count = 1
-            cal = calibration("")
+            obj = calibration("")
+            #ax = axis("")
             y_value = []
             while True:
                 line = file.readline()
@@ -227,50 +237,184 @@ class dcminfo:
                         fun.line_end = line_count
                         self.addfunction(fun)
                     elif txt[1] in self.keywords.keys():
-                        # calibration block
-                        cal = calibration(txt[2])
-                        cal.type = self.keywords[txt[1]]
-                        cal.line_start = line_count
+                        if txt[1] == "STUETZSTELLENVERTEILUNG":
+                            # axis block
+                            obj = axis(txt[2])
+                        else:
+                            # calibration block
+                            obj = calibration(txt[2])
+                        obj.type = self.keywords[txt[1]]
+                        obj.line_start = line_count
                     elif txt[1] == "LANGNAME":
-                        cal.description = txt[2]
+                        obj.description = txt[2]
                     elif txt[1] == "FUNKTION":
-                        cal.fun = txt[2]
+                        obj.fun = txt[2]
                     elif txt[1] == "EINHEIT_X":
-                        cal.x.unit = txt[2]
+                        if obj.type == "SHARED_AXIS":
+                            obj.unit = txt[2]
+                        else:
+                            obj.x.unit = txt[2]
                     elif txt[1] == "EINHEIT_Y":
-                        cal.y.unit = txt[2]
+                        obj.y.unit = txt[2]
                     elif txt[1] == "EINHEIT_W":
-                        cal.unit = txt[2]
+                        obj.unit = txt[2]
+                    elif txt[1] == "*SSTX":
+                        obj.x.name = txt[2]
+                    elif txt[1] == "*SSTY":
+                        obj.y.name = txt[2]
                     elif txt[1] == "ST/X":
                         for i in range(2, len(txt) + 1):
-                            cal.x.value.append(float(txt[i]))
+                            if obj.type == "SHARED_AXIS":
+                                obj.value.append(float(txt[i]))
+                            else:
+                                obj.x.value.append(float(txt[i]))
                     elif txt[1] == "ST/Y":
-                        cal.y.value.append(float(txt[2]))
+                        obj.y.value.append(float(txt[2]))
                         if len(y_value) > 0:
-                            cal.value.append(y_value)
+                            obj.value.append(y_value)
                             y_value = []
                     elif txt[1] == "WERT":
-                        if cal.type == "VALUE":
-                            cal.value.append(float(txt[2]))
-                        elif ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
+                        if obj.type == "VALUE":
+                            obj.value.append(float(txt[2]))
+                        elif ( obj.type == "CURVE" ) | ( obj.type == "GROUPED_CURVE" ):
                             for i in range(2, len(txt) + 1):
-                                cal.value.append(float(txt[i]))
-                        elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                                obj.value.append(float(txt[i]))
+                        elif ( obj.type == "MAP" ) | ( obj.type == "GROUPED_MAP" ):
                             for i in range(2, len(txt) + 1):
                                 y_value.append(float(txt[i]))
                     elif txt[1] == "END":
                         if len(y_value) > 0:
-                            cal.value.append(y_value)
+                            obj.value.append(y_value)
                             y_value = []
-                        cal.line_end = line_count
-                        if cal.type == "SHARED_AXIS":
-                            self.addaxis(cal)
+                        obj.line_end = line_count
+                        if obj.type == "SHARED_AXIS":
+                            self.addaxis(obj)
                         else:
-                            self.addcalibration(cal)
+                            self.addcalibration(obj)
 
-            print("find functions:{0}, calibrations:{1}, axes:{2}".format(len(self.functions), len(self.calibrations),
-                                                                            len(self.axes)))
+            print(f"find functions:{len(self.functions)}, calibrations:{len(self.calibrations)}, axes:{len(self.axes)}")
             self.line_count = line_count
+    
+    
+    def write(self, fileName, labels, comment=None):
+        # labels is list of cal labels to be written
+        # invert the keywords dict for writing
+        invKeywords = {v: k for k, v in self.keywords.items()}
+        
+        # get list of functions and axes relating to labels passed
+        functions = []
+        axes = []
+        for label in labels:
+            cal = self.getcalobject("calibration", label)
+            if cal.fun not in functions:
+                functions.append(cal.fun)
+            if bool(cal.x.name) & (cal.x.name not in axes):
+                axes.append(cal.x.name)
+                # print warning to user that shared axes are being written
+                print(f'WARNING!!!   Table {cal.name} contains shared X axis {cal.x.name}')
+            if bool(cal.y.name) & (cal.y.name not in axes):
+                axes.append(cal.y.name)
+                print(f'WARNING!!!   Table {cal.name} contains shared Y axis {cal.y.name}')
+                
+        
+        with open(fileName, 'w') as f:
+            # write header
+            f.write(f'* Created by {os.path.basename(__file__)}\n')
+            f.write(f'* Creation date: {datetime.now().strftime("%m/%d/%Y %H:%M:%S")}\n')
+            f.write(f'* User: {os.getlogin()}\n')
+            if comment is not None:
+                f.write(f'* User comment: {comment}\n')
+            f.write(f'\n{self.file_content}\n\n')
+            if functions:
+                f.write("FUNKTIONEN\n")
+                for funcName in functions:
+                    func = self.getcalobject("function", funcName)
+                    f.write(f'   FKT {func.name} "{func.description}"\n')
+                f.write("END\n\n")
+                
+            for label in labels:
+                cal = self.getcalobject("calibration", label)
+                if cal.type == "VALUE":
+                    f.write(f'{invKeywords[cal.type]} {cal.name}\n')
+                elif ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
+                    f.write(f'{invKeywords[cal.type]} {cal.name} {len(cal.x.value)}\n')
+                elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                    f.write(f'{invKeywords[cal.type]} {cal.name} {len(cal.x.value)} {len(cal.y.value)}\n')
+                f.write(f'   LANGNAME "{cal.description}"\n')
+                f.write(f'   FUNKTION {cal.fun}\n')
+                if ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ) | ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                    f.write(f'   EINHEIT_X "{cal.x.unit}"\n')
+                if ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                    f.write(f'   EINHEIT_Y "{cal.y.unit}"\n')
+                f.write(f'   EINHEIT_W "{cal.unit}"\n')
+                if cal.x.name:
+                    f.write(f'*SSTX\t{cal.x.name}\n')
+                if cal.y.name:
+                    f.write(f'*SSTY\t{cal.y.name}\n')
+                
+                
+                if cal.type == "VALUE":
+                    f.write(f'   WERT {cal.value:.16f}')
+                    
+                else:
+                    # write x axis values
+                    for i, x in enumerate(cal.x.value):
+                        if i==0:
+                            f.write(f'   ST/X   {x:.16f}')
+                        else:
+                            if ( (i) % 6 ) > 0:
+                                f.write(f'   {x:.16f}')
+                            else:
+                                f.write(f'\n   ST/X   {x:.16f}')
+                
+                
+                if ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
+                    # write z axis values
+                    for i, z in enumerate(cal.value):
+                        if i==0:
+                            f.write(f'   WERT   {z:.16f}')
+                        else:
+                            if ( (i) % 6 ) > 0:
+                                f.write(f'   {z:.16f}')
+                            else:
+                                f.write(f'\n   WERT   {z:.16f}')
+                                
+                elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                    # write y & z axis values
+                    for i, y in enumerate(cal.y.value):
+                        f.write(f'\n   ST/Y   {y:.16f}\n')
+                        for j, z in enumerate(cal.value[i]):
+                            if j==0:
+                                f.write(f'   WERT   {z:.16f}')
+                            else:
+                                if ( (j) % 6 ) > 0:
+                                    f.write(f'   {z:.16f}')
+                                else:
+                                    f.write(f'\n   WERT   {z:.16f}')
+                                    
+                f.write("\nEND\n\n")
+                
+                
+            # write shared axes
+            if axes:
+                for axName in axes:
+                    axis = self.getcalobject("axis", axName)
+                    f.write(f'{invKeywords[axis.type]} {axis.name} {len(axis.value)}\n')
+                    f.write("*SST\n")
+                    f.write(f'   LANGNAME "{axis.description}"\n')
+                    f.write(f'   FUNKTION {axis.fun}\n')
+                    f.write(f'   EINHEIT_X "{axis.unit}"\n')
+                    for i, x in enumerate(axis.value):
+                        if i==0:
+                            f.write(f'   ST/X   {x:.16f}')
+                        else:
+                            if ( (i) % 6 ) > 0:
+                                f.write(f'   {x:.16f}')
+                            else:
+                                f.write(f'\n   ST/X   {x:.16f}')
+                    f.write("\nEND\n\n")
+            
+            
 
 
 def isDigit(x):
