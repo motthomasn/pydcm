@@ -20,6 +20,12 @@ Modifications contributed by motthomasn <motthomasn@gmail.com>:
             Removed -1 from x = range(0, len(self.value), 1) in axis.show
             Added grid lines axis.show
             Added write function
+220114      Converted data to numpy arrays and adjusted show() & write functions to suit
+220118      Corrected write function regarding size of tables and function description
+            Added getting of function version
+220607      Added ability to write all labels to DCM
+220719      Added FESTKENNLINIE & FESTKENNFELD types
+            Replaced multiple if conditions with item in list operations for neatness
 """
 
 import matplotlib.pyplot as plt
@@ -86,8 +92,6 @@ class axis(calobject):
         plt.xlabel(self.getlabel("x", "", ""))
         plt.ylabel(self.getlabel("y", self.name, self.unit))
         plt.grid(b=True, which='major', axis='both')
-        # for i in range(0, len(self.value) - 1):
-        #     plt.text(i, self.value[i], "{0},{1}".format(i, self.value[i]))
         plt.show()
 
 
@@ -101,27 +105,21 @@ class calibration(calobject):
         self.y = axis("")
 
     def show(self):
-        if self.type == "CURVE" or self.type == "GROUPED_CURVE" or self.type == "MAP" or self.type == "GROUPED_MAP" or self.type == "VALUE":
-            if self.type == "CURVE" or self.type == "GROUPED_CURVE":
-                plt.plot(self.x.value, self.value, marker='o')
+        #if self.type == "CURVE" or self.type == "GROUPED_CURVE" or self.type == "MAP" or self.type == "GROUPED_MAP" or self.type == "VALUE":
+        if self.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE", "MAP", "FIXED_MAP", "GROUPED_MAP", "VALUE"]:
+            if self.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE"]:
+            #if self.type == "CURVE" or self.type == "GROUPED_CURVE":
+                plt.plot(self.x.value.squeeze(), self.value.squeeze(), marker='o')
                 plt.title(self.name)
                 plt.xlabel(self.getlabel("x", self.x.name, self.x.unit))
                 plt.ylabel(self.getlabel("y", self.name, self.unit))
                 plt.grid(b=True, which='major', axis='both')
-                # for i in range(0, len(self.value)):
-                #     plt.text(self.x.value[i], self.value[i], "{0},{1}".format(self.x.value[i], self.value[i]))
                 plt.show()
-            elif self.type == "MAP" or self.type == "GROUPED_MAP":
-                X, Y = np.meshgrid(self.y.value, self.x.value)  # exchange for plot
-                nx = len(self.x.value)
-                ny = len(self.y.value)
-                Z = np.zeros((nx, ny))
-                for i in range(0, nx):
-                    for j in range(0, ny):
-                        Z[i, j] = self.value[j][i]
+            elif self.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
+            #elif self.type == "MAP" or self.type == "GROUPED_MAP":
                 fig = plt.figure()
                 ax = Axes3D(fig)
-                p = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap='jet', edgecolor='k')
+                p = ax.plot_surface(self.x.value, self.y.value, self.value, rstride=1, cstride=1, cmap='jet', edgecolor='k')
                 fig.colorbar(p)
                 ax.set_title(self.name)
                 ax.set_ylabel(self.getlabel("x", self.x.name, self.x.unit))  # exchange for plot
@@ -136,8 +134,6 @@ class calibration(calobject):
                 plt.plot(x, self.value, marker='o')
                 plt.xlabel(self.getlabel("x", "", ""))
                 plt.ylabel(self.getlabel("y", self.name, self.unit))
-                # for i in range(0, len(self.value)):
-                #     plt.text(i, self.value[i], "{0},{1}".format(i, self.value[i]))
                 plt.show()
 
     def __str__(self):
@@ -163,8 +159,10 @@ class dcminfo:
     regex = r"(\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\")|(?:[^\\ \t]+)"
     keywords = {"FESTWERT": "VALUE", 
                 "KENNLINIE": "CURVE",
+                "FESTKENNLINIE": "FIXED_CURVE",
                 "GRUPPENKENNLINIE": "GROUPED_CURVE",
                 "KENNFELD": "MAP",
+                "FESTKENNFELD": "FIXED_MAP",
                 "GRUPPENKENNFELD": "GROUPED_MAP",
                 "STUETZSTELLENVERTEILUNG": "SHARED_AXIS"}
 
@@ -178,21 +176,34 @@ class dcminfo:
         return
 
     def addfunction(self, fun):
-        # if not fun.name in self.functions.keys():
+        
         self.functions[fun.name] = fun
 
     def addcalibration(self, cal):
-        # if not cal.name in self.calibrations.keys():
+        
+        # convert to numpy arrays
+        if len(cal.y.value) > 0:
+            # table is 3-D
+            cal.x.value = np.asarray(cal.x.value).reshape(1,-1)
+            cal.y.value = np.asarray(cal.y.value).reshape(-1,1)
+            cal.value = np.asarray(cal.value)
+        
+        elif cal.type == "VALUE":
+            # calibration is a scalar. 
+            cal.value = cal.value[0]
+        else:
+            cal.x.value = np.asarray(cal.x.value).reshape(1,-1)
+            cal.value = np.asarray(cal.value).reshape(1,-1)
+        
         self.calibrations[cal.name] = cal
 
     def addaxis(self, ax):
-        # if not ax.name in self.axes.keys():
+        
+        # convert to numpy array
+        ax.value = np.asarray(ax.value)
+        
         self.axes[ax.name] = ax
-        # for cal in self.calibrations:
-        #     if cal.x.name == ax.name:
-        #         cal.x = ax
-        #     if cal.y.name == ax.name:
-        #         cal.y = ax
+        
 
     def getcalobject(self, type, name):
         if type in self.calobjects.keys() and name in self.calobjects[type].keys():
@@ -206,6 +217,17 @@ class dcminfo:
         for matchNum, match in enumerate(matches, start=1):
             txt[matchNum] = match.group().strip('"')
         return txt
+    
+    def listnames(self, objects="Calibrations"):
+        # return list of object names in dcm object
+        # valid objects are "Functions", "Calibrations", "Axes"
+        if objects == "Functions":
+            return list(self.functions.keys())
+        elif objects == "Calibrations":
+            return list(self.calibrations.keys())
+        elif objects == "Axes":
+            return list(self.axes.keys())
+        
 
     def read(self, dcmfile):
         self.functions.clear()
@@ -217,7 +239,6 @@ class dcminfo:
             line = file.readline()
             line_count = 1
             obj = calibration("")
-            #ax = axis("")
             y_value = []
             while True:
                 line = file.readline()
@@ -232,6 +253,7 @@ class dcminfo:
                     if txt[1] == "FKT":
                         # function
                         fun = function(txt[2])
+                        fun.version = txt[3]
                         fun.description = txt[4]
                         fun.line_start = line_count
                         fun.line_end = line_count
@@ -276,10 +298,12 @@ class dcminfo:
                     elif txt[1] == "WERT":
                         if obj.type == "VALUE":
                             obj.value.append(float(txt[2]))
-                        elif ( obj.type == "CURVE" ) | ( obj.type == "GROUPED_CURVE" ):
+                        #elif ( obj.type == "CURVE" ) | ( obj.type == "GROUPED_CURVE" ):
+                        elif obj.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE"]:
                             for i in range(2, len(txt) + 1):
                                 obj.value.append(float(txt[i]))
-                        elif ( obj.type == "MAP" ) | ( obj.type == "GROUPED_MAP" ):
+                        #elif ( obj.type == "MAP" ) | ( obj.type == "GROUPED_MAP" ):
+                        elif obj.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
                             for i in range(2, len(txt) + 1):
                                 y_value.append(float(txt[i]))
                     elif txt[1] == "END":
@@ -296,26 +320,31 @@ class dcminfo:
             self.line_count = line_count
     
     
-    def write(self, fileName, labels, comment=None):
+    def write(self, fileName, labels=None, comment=None):
         # labels is list of cal labels to be written
+        # if no labels passed then all items will be written
         # invert the keywords dict for writing
         invKeywords = {v: k for k, v in self.keywords.items()}
         
-        # get list of functions and axes relating to labels passed
-        functions = []
-        axes = []
-        for label in labels:
-            cal = self.getcalobject("calibration", label)
-            if cal.fun not in functions:
-                functions.append(cal.fun)
-            if bool(cal.x.name) & (cal.x.name not in axes):
-                axes.append(cal.x.name)
-                # print warning to user that shared axes are being written
-                print(f'WARNING!!!   Table {cal.name} contains shared X axis {cal.x.name}')
-            if bool(cal.y.name) & (cal.y.name not in axes):
-                axes.append(cal.y.name)
-                print(f'WARNING!!!   Table {cal.name} contains shared Y axis {cal.y.name}')
-                
+        if labels is not None:
+            # get list of functions and axes relating to labels passed
+            functions = []
+            axes = []
+            for label in labels:
+                cal = self.getcalobject("calibration", label)
+                if cal.fun not in functions:
+                    functions.append(cal.fun)
+                if bool(cal.x.name) & (cal.x.name not in axes):
+                    axes.append(cal.x.name)
+                    # print warning to user that shared axes are being written
+                    print(f'WARNING!!!   Table {cal.name} contains shared X axis {cal.x.name}')
+                if bool(cal.y.name) & (cal.y.name not in axes):
+                    axes.append(cal.y.name)
+                    print(f'WARNING!!!   Table {cal.name} contains shared Y axis {cal.y.name}')
+        else:
+            functions = self.listnames(objects="Functions")
+            labels = self.listnames(objects="Calibrations")
+            axes = self.listnames(objects="Axes")
         
         with open(fileName, 'w') as f:
             # write header
@@ -329,22 +358,27 @@ class dcminfo:
                 f.write("FUNKTIONEN\n")
                 for funcName in functions:
                     func = self.getcalobject("function", funcName)
-                    f.write(f'   FKT {func.name} "{func.description}"\n')
+                    f.write(f'   FKT {func.name} "{func.version}" "{func.description}"\n')
                 f.write("END\n\n")
                 
             for label in labels:
                 cal = self.getcalobject("calibration", label)
                 if cal.type == "VALUE":
                     f.write(f'{invKeywords[cal.type]} {cal.name}\n')
-                elif ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
-                    f.write(f'{invKeywords[cal.type]} {cal.name} {len(cal.x.value)}\n')
-                elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
-                    f.write(f'{invKeywords[cal.type]} {cal.name} {len(cal.x.value)} {len(cal.y.value)}\n')
+                #elif ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
+                elif cal.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE"]:
+                    f.write(f'{invKeywords[cal.type]} {cal.name} {cal.x.value.size}\n')
+                #elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                elif cal.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
+                    f.write(f'{invKeywords[cal.type]} {cal.name} {cal.x.value.shape[1]} {cal.y.value.shape[0]}\n')
                 f.write(f'   LANGNAME "{cal.description}"\n')
-                f.write(f'   FUNKTION {cal.fun}\n')
-                if ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ) | ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                if hasattr(cal, "fun"):
+                    f.write(f'   FUNKTION {cal.fun}\n')
+                #if ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ) | ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                if cal.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE", "MAP", "FIXED_MAP", "GROUPED_MAP"]:
                     f.write(f'   EINHEIT_X "{cal.x.unit}"\n')
-                if ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                #if ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                if cal.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
                     f.write(f'   EINHEIT_Y "{cal.y.unit}"\n')
                 f.write(f'   EINHEIT_W "{cal.unit}"\n')
                 if cal.x.name:
@@ -358,36 +392,38 @@ class dcminfo:
                     
                 else:
                     # write x axis values
-                    for i, x in enumerate(cal.x.value):
-                        if i==0:
+                    for (i,j), x in np.ndenumerate(cal.x.value):
+                        if j==0:
                             f.write(f'   ST/X   {x:.16f}')
                         else:
-                            if ( (i) % 6 ) > 0:
+                            if ( j % 6 ) > 0:
                                 f.write(f'   {x:.16f}')
                             else:
                                 f.write(f'\n   ST/X   {x:.16f}')
                 
                 
-                if ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
+                #if ( cal.type == "CURVE" ) | ( cal.type == "GROUPED_CURVE" ):
+                if cal.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE"]:
                     # write z axis values
-                    for i, z in enumerate(cal.value):
-                        if i==0:
-                            f.write(f'   WERT   {z:.16f}')
+                    for (i,j), z in np.ndenumerate(cal.value):
+                        if j==0:
+                            f.write(f'\n   WERT   {z:.16f}')
                         else:
-                            if ( (i) % 6 ) > 0:
+                            if ( j % 6 ) > 0:
                                 f.write(f'   {z:.16f}')
                             else:
                                 f.write(f'\n   WERT   {z:.16f}')
                                 
-                elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                #elif ( cal.type == "MAP" ) | ( cal.type == "GROUPED_MAP" ):
+                elif cal.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
                     # write y & z axis values
-                    for i, y in enumerate(cal.y.value):
+                    for (i, j), y in np.ndenumerate(cal.y.value):
                         f.write(f'\n   ST/Y   {y:.16f}\n')
                         for j, z in enumerate(cal.value[i]):
                             if j==0:
                                 f.write(f'   WERT   {z:.16f}')
                             else:
-                                if ( (j) % 6 ) > 0:
+                                if ( j % 6 ) > 0:
                                     f.write(f'   {z:.16f}')
                                 else:
                                     f.write(f'\n   WERT   {z:.16f}')
@@ -402,13 +438,14 @@ class dcminfo:
                     f.write(f'{invKeywords[axis.type]} {axis.name} {len(axis.value)}\n')
                     f.write("*SST\n")
                     f.write(f'   LANGNAME "{axis.description}"\n')
-                    f.write(f'   FUNKTION {axis.fun}\n')
+                    if hasattr(axis, "fun"):
+                        f.write(f'   FUNKTION {axis.fun}\n')
                     f.write(f'   EINHEIT_X "{axis.unit}"\n')
                     for i, x in enumerate(axis.value):
                         if i==0:
                             f.write(f'   ST/X   {x:.16f}')
                         else:
-                            if ( (i) % 6 ) > 0:
+                            if ( i % 6 ) > 0:
                                 f.write(f'   {x:.16f}')
                             else:
                                 f.write(f'\n   ST/X   {x:.16f}')
