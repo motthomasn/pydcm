@@ -26,6 +26,15 @@ Modifications contributed by motthomasn <motthomasn@gmail.com>:
 220607      Added ability to write all labels to DCM
 220719      Added FESTKENNLINIE & FESTKENNFELD types
             Replaced multiple if conditions with item in list operations for neatness
+221004      Added ability to parse multiple files
+221114      Made reading VALUES more reliable for creating objects from scratch
+            Added reading and writing of type "TEXT" as well as "WERT" required for some CPC flags
+230406      Added FESTWERTEBLOCK type
+            Fixed issue with plotting maps
+240208      Added error handling in case cal has no function defined
+241206      Bugfix. Changed & statement in line 360 for writing functions to file into a nested if
+            as it was causing an error if there were no functions to write
+260303      Bugfix: no handling for passing axis objects to write()
 """
 
 import matplotlib.pyplot as plt
@@ -87,11 +96,12 @@ class axis(calobject):
 
     def show(self):
         x = range(0, len(self.value), 1)
+        plt.figure()
         plt.plot(x, self.value, marker='o')
         plt.title(self.name)
         plt.xlabel(self.getlabel("x", "", ""))
         plt.ylabel(self.getlabel("y", self.name, self.unit))
-        plt.grid(b=True, which='major', axis='both')
+        plt.grid(visible=True, which='major', axis='both')
         plt.show()
 
 
@@ -106,30 +116,32 @@ class calibration(calobject):
 
     def show(self):
         #if self.type == "CURVE" or self.type == "GROUPED_CURVE" or self.type == "MAP" or self.type == "GROUPED_MAP" or self.type == "VALUE":
-        if self.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE", "MAP", "FIXED_MAP", "GROUPED_MAP", "VALUE"]:
-            if self.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE"]:
+        if self.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE", "MAP", "FIXED_MAP", "GROUPED_MAP", "VALUE", "FIXED_VALUE_BLOCK"]:
+            if self.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE", "FIXED_VALUE_BLOCK"]:
             #if self.type == "CURVE" or self.type == "GROUPED_CURVE":
+                plt.figure()
                 plt.plot(self.x.value.squeeze(), self.value.squeeze(), marker='o')
                 plt.title(self.name)
                 plt.xlabel(self.getlabel("x", self.x.name, self.x.unit))
                 plt.ylabel(self.getlabel("y", self.name, self.unit))
-                plt.grid(b=True, which='major', axis='both')
+                plt.grid(visible=True, which='major', axis='both')
                 plt.show()
             elif self.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
             #elif self.type == "MAP" or self.type == "GROUPED_MAP":
                 fig = plt.figure()
-                ax = Axes3D(fig)
+                ax = fig.add_subplot(111, projection='3d')
                 p = ax.plot_surface(self.x.value, self.y.value, self.value, rstride=1, cstride=1, cmap='jet', edgecolor='k')
-                fig.colorbar(p)
+                # fig.colorbar(p)
                 ax.set_title(self.name)
-                ax.set_ylabel(self.getlabel("x", self.x.name, self.x.unit))  # exchange for plot
-                ax.set_xlabel(self.getlabel("y", self.y.name, self.y.unit))  # exchange for plot
+                ax.set_xlabel(self.getlabel("x", self.x.name, self.x.unit))  # exchange for plot
+                ax.set_ylabel(self.getlabel("y", self.y.name, self.y.unit))  # exchange for plot
                 ax.set_zlabel(self.getlabel("z", self.name, self.unit))
                 plt.show()
             elif self.type == "VALUE":
                 if not isDigit(self.value[0]):
                     return
                 x = range(0, len(self.value) - 1, 1)
+                plt.figure()
                 plt.title(self.name)
                 plt.plot(x, self.value, marker='o')
                 plt.xlabel(self.getlabel("x", "", ""))
@@ -164,7 +176,8 @@ class dcminfo:
                 "KENNFELD": "MAP",
                 "FESTKENNFELD": "FIXED_MAP",
                 "GRUPPENKENNFELD": "GROUPED_MAP",
-                "STUETZSTELLENVERTEILUNG": "SHARED_AXIS"}
+                "STUETZSTELLENVERTEILUNG": "SHARED_AXIS",
+                "FESTWERTEBLOCK": "FIXED_VALUE_BLOCK"}
 
     def __init__(self):
         self.functions = {}
@@ -179,22 +192,26 @@ class dcminfo:
         
         self.functions[fun.name] = fun
 
-    def addcalibration(self, cal):
-        
-        # convert to numpy arrays
-        if len(cal.y.value) > 0:
-            # table is 3-D
-            cal.x.value = np.asarray(cal.x.value).reshape(1,-1)
-            cal.y.value = np.asarray(cal.y.value).reshape(-1,1)
-            cal.value = np.asarray(cal.value)
-        
-        elif cal.type == "VALUE":
-            # calibration is a scalar. 
-            cal.value = cal.value[0]
+    def addcalibration(self, cal=None, name=""):
+        if cal is None:
+            # create a new blank calibration object
+            cal = calibration(name)
         else:
-            cal.x.value = np.asarray(cal.x.value).reshape(1,-1)
-            cal.value = np.asarray(cal.value).reshape(1,-1)
-        
+            # convert to numpy arrays
+            if len(cal.y.value) > 0:
+                # table is 3-D
+                cal.x.value = np.asarray(cal.x.value).reshape(1,-1)
+                cal.y.value = np.asarray(cal.y.value).reshape(-1,1)
+                cal.value = np.asarray(cal.value)
+            
+            elif cal.type == "VALUE":
+                # calibration is a scalar. 
+                if type(cal.value) is list:
+                    cal.value = cal.value[0]
+            else:
+                cal.x.value = np.asarray(cal.x.value).reshape(1,-1)
+                cal.value = np.asarray(cal.value).reshape(1,-1)
+            
         self.calibrations[cal.name] = cal
 
     def addaxis(self, ax):
@@ -233,91 +250,101 @@ class dcminfo:
         self.functions.clear()
         self.calibrations.clear()
         self.axes.clear()
-        line_count = 0
-        with open(dcmfile, 'r') as file:
-            # first line: Description Header
-            line = file.readline()
-            line_count = 1
-            obj = calibration("")
-            y_value = []
-            while True:
+        
+        if not isinstance(dcmfile, list):
+            dcmfile = [dcmfile]
+        
+        for f in dcmfile:
+            line_count = 0
+            with open(f, 'r') as file:
+                # first line: Description Header
                 line = file.readline()
-                line_count = line_count + 1
-                if not line:
-                    break
-                line = line.strip()
-                if len(line) == 0 or line.startswith(self.comment_indicator):
-                    continue
-                else:
-                    txt = self.split(line)
-                    if txt[1] == "FKT":
-                        # function
-                        fun = function(txt[2])
-                        fun.version = txt[3]
-                        fun.description = txt[4]
-                        fun.line_start = line_count
-                        fun.line_end = line_count
-                        self.addfunction(fun)
-                    elif txt[1] in self.keywords.keys():
-                        if txt[1] == "STUETZSTELLENVERTEILUNG":
-                            # axis block
-                            obj = axis(txt[2])
-                        else:
-                            # calibration block
-                            obj = calibration(txt[2])
-                        obj.type = self.keywords[txt[1]]
-                        obj.line_start = line_count
-                    elif txt[1] == "LANGNAME":
-                        obj.description = txt[2]
-                    elif txt[1] == "FUNKTION":
-                        obj.fun = txt[2]
-                    elif txt[1] == "EINHEIT_X":
-                        if obj.type == "SHARED_AXIS":
-                            obj.unit = txt[2]
-                        else:
-                            obj.x.unit = txt[2]
-                    elif txt[1] == "EINHEIT_Y":
-                        obj.y.unit = txt[2]
-                    elif txt[1] == "EINHEIT_W":
-                        obj.unit = txt[2]
-                    elif txt[1] == "*SSTX":
-                        obj.x.name = txt[2]
-                    elif txt[1] == "*SSTY":
-                        obj.y.name = txt[2]
-                    elif txt[1] == "ST/X":
-                        for i in range(2, len(txt) + 1):
-                            if obj.type == "SHARED_AXIS":
-                                obj.value.append(float(txt[i]))
+                line_count = 1
+                obj = calibration("")
+                y_value = []
+                while True:
+                    line = file.readline()
+                    line_count = line_count + 1
+                    if not line:
+                        break
+                    line = line.strip()
+                    if len(line) == 0 or line.startswith(self.comment_indicator):
+                        continue
+                    else:
+                        txt = self.split(line)
+                        if txt[1] == "FKT":
+                            # function
+                            fun = function(txt[2])
+                            fun.version = txt[3]
+                            fun.description = txt[4]
+                            fun.line_start = line_count
+                            fun.line_end = line_count
+                            self.addfunction(fun)
+                        elif txt[1] in self.keywords.keys():
+                            if txt[1] == "STUETZSTELLENVERTEILUNG":
+                                # axis block
+                                obj = axis(txt[2])
                             else:
-                                obj.x.value.append(float(txt[i]))
-                    elif txt[1] == "ST/Y":
-                        obj.y.value.append(float(txt[2]))
-                        if len(y_value) > 0:
-                            obj.value.append(y_value)
-                            y_value = []
-                    elif txt[1] == "WERT":
-                        if obj.type == "VALUE":
-                            obj.value.append(float(txt[2]))
-                        #elif ( obj.type == "CURVE" ) | ( obj.type == "GROUPED_CURVE" ):
-                        elif obj.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE"]:
+                                # calibration block
+                                obj = calibration(txt[2])
+                            obj.type = self.keywords[txt[1]]
+                            obj.line_start = line_count
+                        elif txt[1] == "LANGNAME":
+                            obj.description = txt[2]
+                        elif txt[1] == "FUNKTION":
+                            obj.fun = txt[2]
+                        elif txt[1] == "EINHEIT_X":
+                            if obj.type == "SHARED_AXIS":
+                                obj.unit = txt[2]
+                            else:
+                                obj.x.unit = txt[2]
+                        elif txt[1] == "EINHEIT_Y":
+                            obj.y.unit = txt[2]
+                        elif txt[1] == "EINHEIT_W":
+                            obj.unit = txt[2]
+                        elif txt[1] == "*SSTX":
+                            obj.x.name = txt[2]
+                        elif txt[1] == "*SSTY":
+                            obj.y.name = txt[2]
+                        elif txt[1] == "ST/X":
                             for i in range(2, len(txt) + 1):
-                                obj.value.append(float(txt[i]))
-                        #elif ( obj.type == "MAP" ) | ( obj.type == "GROUPED_MAP" ):
-                        elif obj.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
-                            for i in range(2, len(txt) + 1):
-                                y_value.append(float(txt[i]))
-                    elif txt[1] == "END":
-                        if len(y_value) > 0:
-                            obj.value.append(y_value)
-                            y_value = []
-                        obj.line_end = line_count
-                        if obj.type == "SHARED_AXIS":
-                            self.addaxis(obj)
-                        else:
-                            self.addcalibration(obj)
-
-            print(f"find functions:{len(self.functions)}, calibrations:{len(self.calibrations)}, axes:{len(self.axes)}")
-            self.line_count = line_count
+                                if obj.type == "SHARED_AXIS":
+                                    obj.value.append(float(txt[i]))
+                                else:
+                                    obj.x.value.append(float(txt[i]))
+                        elif txt[1] == "ST/Y":
+                            obj.y.value.append(float(txt[2]))
+                            if len(y_value) > 0:
+                                obj.value.append(y_value)
+                                y_value = []
+                        elif txt[1] == "WERT":
+                            if obj.type == "VALUE":
+                                obj.value.append(float(txt[2]))
+                            #elif ( obj.type == "CURVE" ) | ( obj.type == "GROUPED_CURVE" ):
+                            elif obj.type in ["CURVE", "FIXED_CURVE", "GROUPED_CURVE", "FIXED_VALUE_BLOCK"]:
+                                for i in range(2, len(txt) + 1):
+                                    obj.value.append(float(txt[i]))
+                            #elif ( obj.type == "MAP" ) | ( obj.type == "GROUPED_MAP" ):
+                            elif obj.type in ["MAP", "FIXED_MAP", "GROUPED_MAP"]:
+                                for i in range(2, len(txt) + 1):
+                                    y_value.append(float(txt[i]))
+                        elif txt[1] == "TEXT":
+                            obj.value = txt[2]
+                        elif txt[1] == "END":
+                            if len(y_value) > 0:
+                                # print(obj.name)
+                                obj.value.append(y_value)
+                                y_value = []
+                            obj.line_end = line_count
+                            if obj.type == "SHARED_AXIS":
+                                self.addaxis(obj)
+                            else:
+                                if obj.type == "FIXED_VALUE_BLOCK":
+                                    obj.x.value = [ *range( len(obj.value) ) ] # create an artificial X axis
+                                self.addcalibration(obj)
+    
+                print(f"find functions:{len(self.functions)}, calibrations:{len(self.calibrations)}, axes:{len(self.axes)}")
+                self.line_count = line_count
     
     
     def write(self, fileName, labels=None, comment=None):
@@ -330,17 +357,32 @@ class dcminfo:
             # get list of functions and axes relating to labels passed
             functions = []
             axes = []
+            cals = []
             for label in labels:
-                cal = self.getcalobject("calibration", label)
-                if cal.fun not in functions:
-                    functions.append(cal.fun)
-                if bool(cal.x.name) & (cal.x.name not in axes):
-                    axes.append(cal.x.name)
-                    # print warning to user that shared axes are being written
-                    print(f'WARNING!!!   Table {cal.name} contains shared X axis {cal.x.name}')
-                if bool(cal.y.name) & (cal.y.name not in axes):
-                    axes.append(cal.y.name)
-                    print(f'WARNING!!!   Table {cal.name} contains shared Y axis {cal.y.name}')
+                if label in self.functions:
+                    if label not in functions:
+                        functions.append(label)
+                elif label in self.axes:
+                    if label not in axes:
+                        axes.append(label)
+                    if (hasattr(self.axes[label], "fun")):
+                        if (self.axes[label].fun not in functions):
+                            functions.append(self.axes[label].fun)
+                elif label in self.calibrations:
+                    if label not in cals:
+                        cal = self.getcalobject("calibration", label)
+                        if (hasattr(cal, "fun")):
+                            if (cal.fun not in functions):
+                                functions.append(cal.fun)
+                        if bool(cal.x.name) & (cal.x.name not in axes):
+                            axes.append(cal.x.name)
+                            # print warning to user that shared axes are being written
+                            print(f'WARNING!!!   Table {cal.name} contains shared X axis {cal.x.name}')
+                        if bool(cal.y.name) & (cal.y.name not in axes):
+                            axes.append(cal.y.name)
+                            print(f'WARNING!!!   Table {cal.name} contains shared Y axis {cal.y.name}')
+                        cals.append(label)
+
         else:
             functions = self.listnames(objects="Functions")
             labels = self.listnames(objects="Calibrations")
@@ -361,7 +403,7 @@ class dcminfo:
                     f.write(f'   FKT {func.name} "{func.version}" "{func.description}"\n')
                 f.write("END\n\n")
                 
-            for label in labels:
+            for label in cals:
                 cal = self.getcalobject("calibration", label)
                 if cal.type == "VALUE":
                     f.write(f'{invKeywords[cal.type]} {cal.name}\n')
@@ -388,7 +430,10 @@ class dcminfo:
                 
                 
                 if cal.type == "VALUE":
-                    f.write(f'   WERT {cal.value:.16f}')
+                    if type(cal.value) is str:
+                        f.write(f'   TEXT "{cal.value}"')
+                    else:
+                        f.write(f'   WERT {cal.value:.16f}')
                     
                 else:
                     # write x axis values
